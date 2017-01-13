@@ -36,6 +36,19 @@ namespace CodeCracker.CSharp.Usage
             compilationStartAnalysisContext.RegisterSyntaxTreeAction(context => AnalyzeTree(context, compilation));
         }
 
+        private struct MethodKindComparer : IComparer<MethodKind>
+        {
+            public int Compare(MethodKind x, MethodKind y) =>
+                x - y == 0
+                ? 0
+                : (x == MethodKind.Constructor
+                    ? 1
+                    : (y == MethodKind.Constructor
+                        ? -1
+                        : x - y));
+        }
+        private static readonly MethodKindComparer methodKindComparer = new MethodKindComparer();
+
         private static void AnalyzeTree(SyntaxTreeAnalysisContext context, Compilation compilation)
         {
             if (context.IsGenerated()) return;
@@ -51,6 +64,7 @@ namespace CodeCracker.CSharp.Usage
                 var typeSymbol = semanticModel.GetDeclaredSymbol(type);
                 if (typeSymbol == null) continue;
                 var methods = typeSymbol.GetAllMethodsIncludingFromInnerTypes();
+                methods = methods.OrderByDescending(m => m.MethodKind, methodKindComparer).ToList();
                 foreach (var method in methods)
                 {
                     foreach (var syntaxReference in method.DeclaringSyntaxReferences)
@@ -59,6 +73,13 @@ namespace CodeCracker.CSharp.Usage
                                 ? semanticModel
                                 : compilation.GetSemanticModel(syntaxReference.SyntaxTree);
                         var descendants = syntaxReference.GetSyntax().DescendantNodes().ToList();
+                        var argsWithRefOrOut = descendants.OfType<ArgumentSyntax>().Where(a => a.RefOrOutKeyword != null);
+                        foreach (var argWithRefOrOut in argsWithRefOrOut)
+                        {
+                            var fieldSymbol = syntaxRefSemanticModel.GetSymbolInfo(argWithRefOrOut.Expression).Symbol as IFieldSymbol;
+                            if (fieldSymbol == null) continue;
+                            variablesToMakeReadonly.Remove(fieldSymbol);
+                        }
                         var assignments = descendants.OfKind(SyntaxKind.SimpleAssignmentExpression,
                             SyntaxKind.AddAssignmentExpression, SyntaxKind.AndAssignmentExpression, SyntaxKind.DivideAssignmentExpression,
                             SyntaxKind.ExclusiveOrAssignmentExpression, SyntaxKind.LeftShiftAssignmentExpression, SyntaxKind.ModuloAssignmentExpression,
@@ -97,25 +118,28 @@ namespace CodeCracker.CSharp.Usage
         {
             if (fieldSymbol == null) return;
             if (!CanBeMadeReadonly(fieldSymbol)) return;
-            if ((method.MethodKind == MethodKind.StaticConstructor && fieldSymbol.IsStatic)
-            || (method.MethodKind == MethodKind.Constructor && !fieldSymbol.IsStatic))
+            if (!HasAssignmentInLambda(node)
+            && ((method.MethodKind == MethodKind.StaticConstructor && fieldSymbol.IsStatic)
+            || (method.MethodKind == MethodKind.Constructor && !fieldSymbol.IsStatic)))
                 AddVariableThatWasSkippedBeforeBecauseItLackedAInitializer(variablesToMakeReadonly, fieldSymbol, node, syntaxRefSemanticModel);
             else
                 RemoveVariableThatHasAssignment(variablesToMakeReadonly, fieldSymbol);
         }
 
-        private static void AddVariableThatWasSkippedBeforeBecauseItLackedAInitializer(Dictionary<IFieldSymbol, VariableDeclaratorSyntax> variablesToMakeReadonly, IFieldSymbol fieldSymbol, SyntaxNode assignment, SemanticModel semanticModel)
+        private static bool HasAssignmentInLambda(SyntaxNode assignment)
         {
             var parent = assignment.Parent;
             while (parent != null)
             {
                 if (parent is AnonymousFunctionExpressionSyntax)
-                    return;
-                if (parent is ConstructorDeclarationSyntax)
-                    break;
+                    return true;
                 parent = parent.Parent;
             }
+            return false;
+        }
 
+        private static void AddVariableThatWasSkippedBeforeBecauseItLackedAInitializer(Dictionary<IFieldSymbol, VariableDeclaratorSyntax> variablesToMakeReadonly, IFieldSymbol fieldSymbol, SyntaxNode assignment, SemanticModel semanticModel)
+        {
             if (!fieldSymbol.IsReadOnly && !variablesToMakeReadonly.Keys.Contains(fieldSymbol))
             {
                 var containingType = assignment.FirstAncestorOfKind(SyntaxKind.ClassDeclaration, SyntaxKind.StructDeclaration);
@@ -145,8 +169,12 @@ namespace CodeCracker.CSharp.Usage
         private static Dictionary<IFieldSymbol, VariableDeclaratorSyntax> GetCandidateVariables(SemanticModel semanticModel, FieldDeclarationSyntax fieldDeclaration)
         {
             var variablesToMakeReadonly = new Dictionary<IFieldSymbol, VariableDeclaratorSyntax>();
-            if (fieldDeclaration == null) return variablesToMakeReadonly;
-            if (!CanBeMadeReadonly(fieldDeclaration)) return variablesToMakeReadonly;
+            if (fieldDeclaration == null ||
+                IsComplexValueType(semanticModel, fieldDeclaration) ||
+                !CanBeMadeReadonly(fieldDeclaration))
+            {
+                return variablesToMakeReadonly;
+            }
             foreach (var variable in fieldDeclaration.Declaration.Variables)
             {
                 if (variable.Initializer == null) continue;
@@ -165,6 +193,13 @@ namespace CodeCracker.CSharp.Usage
                     || m.IsKind(SyntaxKind.InternalKeyword)
                     || m.IsKind(SyntaxKind.ReadOnlyKeyword)
                     || m.IsKind(SyntaxKind.ConstKeyword));
+        }
+
+        private static bool IsComplexValueType(SemanticModel semanticModel, FieldDeclarationSyntax fieldDeclaration)
+        {
+            var fieldTypeName = fieldDeclaration.Declaration.Type;
+            var fieldType = semanticModel.GetTypeInfo(fieldTypeName).ConvertedType;
+            return fieldType.IsValueType && !(fieldType.TypeKind == TypeKind.Enum || fieldType.IsPrimitive());
         }
 
         private static bool CanBeMadeReadonly(IFieldSymbol fieldSymbol)

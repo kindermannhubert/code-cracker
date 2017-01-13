@@ -12,7 +12,7 @@ namespace CodeCracker.CSharp.Performance
         DiagnosticAnalyzer
     {
         internal const string Title = "Make Local Variable Constant.";
-        internal const string MessageFormat = "This variables can be made const.";
+        internal const string MessageFormat = "This variable can be made const.";
         internal const string Category = SupportedCategories.Performance;
         const string Description = "This variable is assigned a constant value and never changed it can be made 'const'";
         internal static readonly DiagnosticDescriptor Rule = new DiagnosticDescriptor(
@@ -61,6 +61,7 @@ namespace CodeCracker.CSharp.Performance
                 // if reference type, value is null?
                 var variableTypeName = declaration.Declaration.Type;
                 var variableType = semanticModel.GetTypeInfo(variableTypeName).ConvertedType;
+                if (variableType.TypeKind == TypeKind.Pointer) return false;
                 if (variableType.IsReferenceType && variableType.SpecialType != SpecialType.System_String && constantValue.Value != null) return false;
 
                 // nullable?

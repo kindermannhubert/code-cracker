@@ -20,6 +20,32 @@ class TypeName
         }
 
         [Fact]
+        public async Task IgnoreOut()
+        {
+            const string source = @"
+public class C
+{
+    private string field = "";
+    private static void Foo(out string bar) => bar = "";
+    public void Baz() => Foo(out field);
+}";
+            await VerifyCSharpHasNoDiagnosticsAsync(new[] { source });
+        }
+
+        [Fact]
+        public async Task IgnoreRef()
+        {
+            const string source = @"
+public class C
+{
+    private string field = "";
+    private static void Foo(ref string bar) => bar = "";
+    public void Baz() => Foo(ref field);
+}";
+            await VerifyCSharpHasNoDiagnosticsAsync(new[] { source });
+        }
+
+        [Fact]
         public async Task IgnorePostIncrement()
         {
             const string source = @"
@@ -824,6 +850,29 @@ class TypeName
         }
 
         [Fact]
+        public async Task FieldsAssignedOnLambdaWithInitializerDoesNotCreateDiagnostic()
+        {
+            const string source = @"
+using System;
+class C
+{
+    private readonly Action set;
+    private int i = 0;
+
+    public C()
+    {
+        set = () => i = 1;
+    }
+
+    public void Modify()
+    {
+        set();
+    }
+}";
+            await VerifyCSharpHasNoDiagnosticsAsync(source);
+        }
+
+        [Fact]
         public async Task VariableInitializerDoesNotCreateDiagnostic()
         {
             const string source = @"
@@ -844,6 +893,125 @@ class TypeName
             var c = new A { X = 7 };
         }
    }";
+            await VerifyCSharpHasNoDiagnosticsAsync(source);
+        }
+
+        [Fact]
+        public async Task UserDefinedStructFieldDoesNotCreateDiagnostic()
+        {
+            const string source = @"
+    namespace ConsoleApplication1
+    {
+        public class MyClass
+        {
+            private MyStruct myStruct = default(MyStruct);
+
+            private struct MyStruct
+            {
+                public int Value;
+            }
+        }
+    }
+    ";
+            await VerifyCSharpHasNoDiagnosticsAsync(source);
+        }
+
+        [Fact]
+        public async Task DateTimeFieldInitializedOnDeclarationDoesNotCreateDiagnostic()
+        {
+            const string source = @"
+    using System;
+
+    namespace ConsoleApplication1
+    {
+        public class MyClass
+        {
+            private DateTime date = new DateTime(2008, 5, 1, 8, 30, 52);
+        }
+    }
+    ";
+            await VerifyCSharpHasNoDiagnosticsAsync(source);
+        }
+
+        [Fact]
+        public async Task EnumerationFieldInitializedOnDeclarationCreatesADiagnostic()
+        {
+            const string source = @"
+    namespace ConsoleApplication1
+    {
+        public class MyClass
+        {
+            private VehicleType car = VehicleType.Car;
+
+            private enum VehicleType
+            {
+                None = 0,
+                Car = 1,
+                Truck = 2
+            }
+        }
+    }
+    ";
+
+            var expected = new DiagnosticResult
+            {
+                Id = DiagnosticId.ReadonlyField.ToDiagnosticId(),
+                Message = string.Format(ReadonlyFieldAnalyzer.Message, "car"),
+                Severity = DiagnosticSeverity.Info,
+                Locations = new[] { new DiagnosticResultLocation("Test0.cs", 6, 33) }
+            };
+            await VerifyCSharpDiagnosticAsync(source, expected);
+        }
+
+        [Fact]
+        public async Task ReferenceTypeFieldInitializedInConstructorCreatesADiagnostic()
+        {
+            const string source = @"
+    namespace ConsoleApplication1
+    {
+        public class Person
+        {
+            private string name;
+
+            public Person(string name)
+            {
+                this.name = name;
+            }
+        }
+    }
+    ";
+
+            var expected = new DiagnosticResult
+            {
+                Id = DiagnosticId.ReadonlyField.ToDiagnosticId(),
+                Message = string.Format(ReadonlyFieldAnalyzer.Message, "name"),
+                Severity = DiagnosticSeverity.Info,
+                Locations = new[] { new DiagnosticResultLocation("Test0.cs", 6, 28) }
+            };
+            await VerifyCSharpDiagnosticAsync(source, expected);
+        }
+
+        [Fact]
+        public async Task IgnoreWhenConstructorIsTheLastMember()
+        {
+            const string source = @"
+class Test
+{
+    private int value;
+    public int Value
+    {
+        get { return value; }
+        set { this.value = value; }
+    }
+    public void Foo()
+    {
+        value = 1;
+    }
+    public Test()
+    {
+        value = 8;
+    }
+}";
             await VerifyCSharpHasNoDiagnosticsAsync(source);
         }
     }
